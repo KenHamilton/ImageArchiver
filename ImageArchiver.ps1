@@ -15,7 +15,7 @@ $Script:FilesSkipped = 0
 $WorkingFolder = "C:\Local\Photo Archiving\Photo Archiver\Photo Archiver\Archive Photos (New)" ### To update for all runtimes
 
 # Functions
-. "$WorkingFolder\ImageArchiverFunctions(0.0.4).ps1"
+. "$WorkingFolder\ImageArchiverFunctions.ps1"
 
 #$ScriptStart = Get-Date
 #$RunTime = Get-xDateTimeString -DateTime $ScriptStart -Pattern "%Y%m%d-%H.%M.%S"
