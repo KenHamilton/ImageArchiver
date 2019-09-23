@@ -3,12 +3,18 @@ param(
     $ExtFilter = "*$Extension",
     $SourcePath = @("C:\Local\Photo Archiving\Photo Archiver\Photo Archiver\Archive Photos (New)\Source Photos", "C:\Local\Photo Archiving\Photo Archiver\Photo Archiver\Archive Photos (New)\Source Photos Additional"),
     $RootArchiveFolder = "C:\Local\Test\Archive Images New",
-    $UndatedArchiveFolder = "$RootArchiveFolder\Undated"
+    $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
+    $ArchiveFolderPattern = "",
+    $ArchiveFilePattern = "",
+    [switch]$ByCamera
 )
 
 $Script:FilesCopied = 0
 $Script:FilesRenamed = 0
 $Script:FilesSkipped = 0
+
+$DupNameIndex = 0
+
 ######
 $SourceImagesWithMetadata = @()
 ######
@@ -22,7 +28,6 @@ function Get-xDateTimeString {
     if ($DateTime -eq $false) { Return (get-date -uformat $Pattern) }
     else { Return (Get-Date $DateTime -uformat $Pattern) }
 }
-
 function Test-FilesAreEqual {
     param (
         [System.IO.FileInfo]$First,
@@ -66,31 +71,11 @@ function Get-xStringNumber {
     Param ($String)
 	
     $CharacterHash = @{
-        "a" = 1
-        "b" = 2
-        "c" = 3
-        "d" = 4
-        "e" = 5
-        "f" = 6
-        "g" = 7
-        "h" = 8
-        "i" = 9
-        "j" = 10
-        "k" = 11
-        "l" = 12
-        "m" = 13
-        "n" = 14
-        "o" = 15
-        "p" = 16
-        "q" = 17
-        "r" = 18
-        "s" = 19
-        "t" = 20
-        "u" = 21
-        "v" = 22
-        "w" = 23
-        "x" = 24
-        "y" = 25
+        "a" = 1;  "b" = 2;  "c" = 3;  "d" = 4;  "e" = 5
+        "f" = 6;  "g" = 7;  "h" = 8;  "i" = 9;  "j" = 10
+        "k" = 11; "l" = 12; "m" = 13; "n" = 14; "o" = 15
+        "p" = 16; "q" = 17; "r" = 18; "s" = 19; "t" = 20
+        "u" = 21; "v" = 22; "w" = 23; "x" = 24; "y" = 25
         "z" = 26
         " " = 0
         ""  = 0
@@ -117,7 +102,6 @@ function Get-xStringNumber {
     }
     Return $StringNumber
 }
-
 function Get-xImageMetadataHashtable {
     param (
         $SourceImage = $CurrentFileObject,
@@ -143,6 +127,7 @@ function Get-xImageMetadataHashtable {
 		
         $DateTimeOriginal = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36867}")
         If ($DateTimeOriginal -lt 1) { $DateTimeOriginal = $false }
+        if ([string]::IsNullOrWhiteSpace($DateTimeOriginal)){ $DateTimeOriginal = $false }
 		
         $SubSecTimeOriginal = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37521}")
         try { $Title = [string]$Metadata.GetQuery("/xmp/dc:title/x-default") }
@@ -170,7 +155,7 @@ function Get-xImageMetadataHashtable {
         $CameraID = "{0:D3}" -f ($CameraIDMake + $CameraIDModel + $CameraIDUserComment)
 
 		
-        if ([string]::IsNullOrWhiteSpace($DateTimeOriginal) -eq $false) {
+        if ($DateTimeOriginal -ne $false) {
             # false may be sufficient
             $Year = $DateTimeOriginal.Substring(0, 4)
             $Month = $DateTimeOriginal.Substring(5, 2)
@@ -207,12 +192,13 @@ function Get-xImageMetadataHashtable {
             } else {
                 $ArchiveFolder = $UndatedArchiveFolder
             }
-            $ArchivedPattern = "[0-9][0-9][0-9]-[0-9][0-9]." # Regex patterrn for *-000-0-00.*
-            if ($SourceImage.BaseName -match $ArchivedPattern) {
-                $ArchiveBaseName = $SourceImage.BaseName.Substring(0, ($SourceImage.BaseName.Length - (9 + $Extension.Length))) + $Separator + $CameraID + $Separator
-                $ArchiveBaseNameShort = $SourceImage.BaseName.Substring(0, ($SourceImage.BaseName.Length - (9 + $Extension.Length))) + $Separator
-                $ArchiveName = $SourceImage.BaseName.Substring(0, ($SourceImage.BaseName.Length - (9 + $Extension.Length))) + $Separator + $CameraID + $Separator + $Revision + $Extension
-                $ArchiveBasePath = $ArchiveFolder + "\" + $SourceImage.BaseName.Substring(0, ($SourceImage.BaseName.Length - (9 + $Extension.Length))) #+ $Separator #+ $CameraID + $Separator
+            $ArchivedPattern = "-[0-9][0-9][0-9]-[0-9][0-9](\.|$)" # Regex patterrn for *-000-00.*
+            if ($SourceImage.Name -match $ArchivedPattern) {
+                $MatchLength = $Matches[0].Length
+                $ArchiveBaseName = $SourceImage.Name.Substring(0, ($SourceImage.Name.Length - ($MatchLength + ($Extension.Length -1)))) + $Separator + $CameraID + $Separator
+                $ArchiveBaseNameShort = $SourceImage.Name.Substring(0, ($SourceImage.Name.Length - ($MatchLength + ($Extension.Length -1)))) + $Separator
+                $ArchiveName = $SourceImage.Name.Substring(0, ($SourceImage.Name.Length - ($MatchLength + ($Extension.Length -1)))) + $Separator + $CameraID + $Separator + $Revision + $Extension
+                $ArchiveBasePath = $ArchiveFolder + "\" + $SourceImage.Name.Substring(0, ($SourceImage.Name.Length - ($MatchLength + ($Extension.Length -1)))) # + $Separator #+ $CameraID + $Separator
             } else {
                 $ArchiveBaseName = $SourceImage.BaseName + $Separator + $CameraID + $Separator
                 $ArchiveBaseNameShort = $SourceImage.BaseName + $Separator
@@ -265,7 +251,6 @@ function Get-xImageMetadataHashtable {
     }
     Return $Hashtable
 }
-
 function Rename-xFiles {
     param($Files)
 
