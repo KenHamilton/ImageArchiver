@@ -5,11 +5,14 @@ param(
     $SourcePath = @("C:"),
     $RootArchiveFolder = "C:\Local\Test\Archive Images New",
     $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
-    $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle","$($ENV:SystemDrive)\Windows","$RootArchiveFolder"),
+    $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
     $ArchiveFolderPattern = "",
     $ArchiveFilePattern = "",
     [switch]$ByCamera = $true
 )
+
+# Prerequisites
+[System.Reflection.Assembly]::LoadWithPartialName("PresentationCore") | Out-Null
 
 
 $Script:FilesCopied = 0
@@ -106,7 +109,7 @@ function Get-xStringNumber {
     }
     Return $StringNumber
 }
-function Get-xImageMetadataHashtableX {
+function Get-z_ImageMetadataHashtable {
     param (
         $SourceImage = $CurrentFileObject,
         $RootArchiveFolder,
@@ -271,20 +274,27 @@ function Get-xImageMetadataHashtable {
         [switch]$ByCamera
     )
 	
-    $Continue = $false
+    $Continue = $true
 	
     try {
-        $ImageStream = New-Object System.IO.FileStream($SourceImage.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite) -ErrorAction Stop
+        $ImageStream = New-Object System.IO.FileStream($SourceImage.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read) -ErrorAction Stop -ErrorVariable FileStreamError
         $Decoder = New-Object System.Windows.Media.Imaging.JpegBitmapDecoder($ImageStream, [Windows.Media.Imaging.BitmapCreateOptions]::None, [Windows.Media.Imaging.BitmapCacheOption]::None) -ErrorAction Stop
         $Continue = $true
     }
     catch {
         if ($ImageStream) { $ImageStream.Dispose() }
-        $Continue = $false
+        $Continue = $true
+        $Decoder = $false
     }
 	
     if ($Continue -eq $true) {
-        $Metadata = $Decoder.Frames[0].Metadata
+        if ($Decoder -ne $false) {
+            $Metadata = $Decoder.Frames[0].Metadata
+        }
+        else {
+            $Metadata = [pscustomobject] @{"Name" = "NonMetadata" }
+            $Metadata | Add-Member -MemberType ScriptMethod -Name "GetQuery" -Value { Return $null }
+        }
         Remove-Variable -Name Decoder
 		
         $ExifDateTimeOriginal = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36867}")
@@ -294,7 +304,7 @@ function Get-xImageMetadataHashtable {
             $SubSecondString = "{0:D3}" -f [int]([float]("." + $SubSecTimeOriginal) * 1000)
         }
         Else {
-            $SubSecondString = $Missing
+            $SubSecondString = "{0:D3}" -f 0
         }
 
         try { $Title = [string]$Metadata.GetQuery("/xmp/dc:title/x-default") }
@@ -310,7 +320,6 @@ function Get-xImageMetadataHashtable {
 		
         $ImageStream.Dispose()
         $Revision = "{0:D2}" -f 0 # "00"  
-        $Missing = "{0:D3}" -f 0
         $Separator = "-"
         $Extension = $SourceImage.Extension
 		
@@ -324,8 +333,11 @@ function Get-xImageMetadataHashtable {
 
         if (($ExifDateTimeOriginal -lt 1) -or ([string]::IsNullOrWhiteSpace($ExifDateTimeOriginal))) {
             # No Exif DateTime - Try IPTC
-            $IPTCDate = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/date created")
-            $IPTCTime = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/time created")
+            try {
+                $IPTCDate = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/date created") 
+                $IPTCTime = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/time created")
+            }
+            catch { $IPTCDate = $null }
             if ([string]::IsNullOrWhiteSpace($IPTCDate)) {
     
                 # Other - XMP
@@ -334,6 +346,9 @@ function Get-xImageMetadataHashtable {
                 #$DT5 = $Metadata.GetQuery("/xmp/exif:DateTimeOriginal")
     
                 # No Date Time Object - Use Modified Date - LastWriteTime
+                # Change SubSecond to a 3 character Hex string based on File Size to add uniqueness
+                [string]$HexSize = '{0:X3}' -f $SourceImage.Length
+                $SubSecondString = $HexSize[($HexSize.Length - 1)..($HexSize.Length - 3)] -join ""
                 $Year = "{0:D4}" -f $SourceImage.LastWriteTime.Year
                 $Month = "{0:D2}" -f $SourceImage.LastWriteTime.Month
                 $Day = "{0:D2}" -f $SourceImage.LastWriteTime.Day
@@ -374,6 +389,8 @@ function Get-xImageMetadataHashtable {
             $Year = $ExifDateTimeOriginal.Substring(0, 4)
             $Month = $ExifDateTimeOriginal.Substring(5, 2)
             $Day = $ExifDateTimeOriginal.Substring(8, 2)
+            try { [string]$ExifTimeZone = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36881}") }
+            catch { $ExifTimeZone = "Unavailable" }
             $DateTimeTaken = [PSCustomObject]@{
                 NoDate          = $false
                 Year            = $Year
@@ -384,7 +401,7 @@ function Get-xImageMetadataHashtable {
                 MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
                 DateString      = "$Year.$Month.$Day"
                 TimeString      = ($ExifDateTimeOriginal.Substring(11, 8)).Replace(":", "") + "." + $SubSecondString
-                TimeZone        = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36881}") 
+                TimeZone        = $ExifTimeZone
             }
         }
 
@@ -412,7 +429,7 @@ function Get-xImageMetadataHashtable {
         
         # Create Hashtable
         $Hashtable = [ordered]@{
-            "DateTimeOriginal"     = $DateTimeOriginal
+            "DateTimeOriginal"     = $DateTimeTaken
             "SubSecTimeOriginal"   = $SubSecTimeOriginal
             "Model"                = $CameraModel
             "Make"                 = $CameraMake
@@ -438,7 +455,7 @@ function Get-xImageMetadataHashtable {
             "SubSecTimeOriginal"   = $false
             "Model"                = $false
             "Make"                 = $false
-            "Title"                = $false
+            "Title"                = $Error[0].Exception.Message
             "ImageDescription"     = $false
             "ImageDescriptionNew"  = $false
             "UserComment"          = $false
@@ -496,16 +513,15 @@ $ScriptStart = Get-Date
 $RunTime = Get-xDateTimeString -DateTime $ScriptStart -Pattern "%Y%m%d-%H.%M.%S"
 $swThresh = 1000
 
-# Prerequisites
-[System.Reflection.Assembly]::LoadWithPartialName("PresentationCore") | Out-Null
+
 
 #Find All Source Photos (JPG)
 Write-Host "Searching Source Path/s for Images (.jpg)..." -ForegroundColor Yellow
-$AllSourceImagePaths = ($SourcePath | %{cmd /c dir "$_\*.jpg" /b /s /a-d-h-s})
+$AllSourceImagePaths = ($SourcePath | % { cmd /c dir "$_\*.jpg" /b /s /a-d-h-s })
 $SourceImagePaths = $AllSourceImagePaths
-foreach($ExcludedFolder in $ExcludedFolders){
+foreach ($ExcludedFolder in $ExcludedFolders) {
     $ExcludedFolder
-    $SourceImagePaths = $SourceImagePaths | ? {$_ -notlike "$ExcludedFolder*"}
+    $SourceImagePaths = $SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" }
 }
 
 Write-Host "$($AllSourceImagePaths.Count) Images found. (Total)" -ForegroundColor Green
@@ -529,12 +545,12 @@ foreach ($SourceImagePath in $SourceImagePaths) {
     )
 
     #####
-    if($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false){
+    if ($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false) {
         $SourceImagesWithMetadata += $CurrentFileObject
     }
- else{
-     $SourceImagesWithOutMetadata += $CurrentFileObject
- }
+    else {
+        $SourceImagesWithOutMetadata += $CurrentFileObject
+    }
     #####
 
     # Check Destination for existing photos with same primary path (sans version info)
@@ -627,8 +643,9 @@ foreach ($SourceImagePath in $SourceImagePaths) {
             Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination ($CurrentFileObject.PhotoMetaData.ArchiveFolder + "\" + $CurrentFileObject.PhotoMetaData.ArchiveName)
             $Script:FilesCopied++
         }
-    } else {
-        #Write-Host "Unable to Retrieve Metadata"
+    }
+    else {
+        Write-Host "Unable to Retrieve Metadata from`: $($CurrentFileObject.FullName) $($CurrentFileObject.PhotoMetaData.Title)"
     }
 
     if ($sw.Elapsed.TotalMilliseconds -ge $swThresh) { Write-Progress -Activity "Archiving Files" -PercentComplete ([int]$i / $t) -Status "$i of $tc"; $sw.Reset(); $sw.Start() }; $i++
