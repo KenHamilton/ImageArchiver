@@ -2,13 +2,13 @@ param(
     $Extension = ".jpg",
     $ExtFilter = "*$Extension",
     #$SourcePath = @("C:\Local\Photo Archiving\Photo Archiver\Photo Archiver\Archive Photos (New)\Source Photos", "C:\Local\Photo Archiving\Photo Archiver\Photo Archiver\Archive Photos (New)\Source Photos Additional"),
-    $SourcePath = @("C:"),
-    $RootArchiveFolder = "C:\Local\Test\Archive Images New",
+    $SourcePath = @("D:"),
+    $RootArchiveFolder = "H:\Photo Archive",
     $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
     $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
     $ArchiveFolderPattern = "",
     $ArchiveFilePattern = "",
-    [switch]$ByCamera = $true
+    [switch]$ByCamera = $false
 )
 
 # Prerequisites
@@ -38,41 +38,56 @@ function Get-xDateTimeString {
 function Test-FilesAreEqual {
     param (
         [System.IO.FileInfo]$First,
-        [System.IO.FileInfo]$Second
+        [System.IO.FileInfo]$Second,
+        $Method = "Hash" # or "Hash"
     )
 
-    $BYTES_TO_READ = 65536 #32768
+    if($Method -eq "Binary"){
 
-    if ($First.Length -ne $Second.Length) {
-        Return $false
-    }
+        $BYTES_TO_READ = 65536 #32768
 
-    $Iterations = [System.Math]::Ceiling($First.Length / $BYTES_TO_READ)
+        if ($First.Length -ne $Second.Length) {
+            Return $false
+        }
 
-    $File1 = $First.OpenRead()
-    $File2 = $Second.OpenRead()
+        $Iterations = [System.Math]::Ceiling($First.Length / $BYTES_TO_READ)
 
-    $one = New-Object byte[] $BYTES_TO_READ
-    $two = New-Object byte[] $BYTES_TO_READ
+        $File1 = $First.OpenRead()
+        $File2 = $Second.OpenRead()
 
-    for ($i = 0; $i -lt $Iterations; $i++) {
-        $File1.Read($one, 0, $BYTES_TO_READ) | Out-Null
-        $File2.Read($two, 0, $BYTES_TO_READ) | Out-Null
+        $one = New-Object byte[] $BYTES_TO_READ
+        $two = New-Object byte[] $BYTES_TO_READ
 
-        for ($x = 0; $x -lt $BYTES_TO_READ; $x += 8) {
-            if ([System.BitConverter]::ToInt64($one, $x) -ne [System.BitConverter]::ToInt64($two, $x)) {
-                $File1.Close()
-                $File2.Close()
-                Return $false
+        for ($i = 0; $i -lt $Iterations; $i++) {
+            $File1.Read($one, 0, $BYTES_TO_READ) | Out-Null
+            $File2.Read($two, 0, $BYTES_TO_READ) | Out-Null
+
+            for ($x = 0; $x -lt $BYTES_TO_READ; $x += 8) {
+                if ([System.BitConverter]::ToInt64($one, $x) -ne [System.BitConverter]::ToInt64($two, $x)) {
+                    $File1.Close()
+                    $File2.Close()
+                    Return $false
+                }
             }
         }
-    }
     
-    $File1.Close()
-    $File2.Close()
+        $File1.Close()
+        $File2.Close()
 
-    Return $true
+        Return $true
 
+    } 
+    elseIf($Method -eq "Hash") {
+
+        $HashPair = $First, $Second | Get-FileHash -Algorithm SHA512 | Select -ExpandProperty Hash
+        if($HashPair[0] -eq $HashPair[1]){ 
+            Return $true
+        }
+        else{
+            Return $false
+        }
+
+    }
 }
 function Get-xStringNumber {
     Param ($String)
@@ -343,7 +358,7 @@ function Rename-xFiles {
         return $null
     }
     else {
-        #Write-Host "Unable to rename some files - Initiating Recursion ($($RemainingFiles.Count) remaining files)"
+        Write-Host "Unable to rename some files - Initiating Recursion ($($RemainingFiles.Count) remaining files)"
         Write-Host "^" -ForegroundColor Magenta -NoNewline
         Rename-xFiles -Files $RemainingFiles
     }
@@ -1206,7 +1221,7 @@ foreach ($SourceImagePath in $SourceImagePaths) {
                 # Perform binary compare to look for duplicates
                 $DuplicateFileFound = $false
                 foreach ($MatchingDestinationFile in $MatchingDestinationFiles) {
-                    if ((Test-FilesAreEqual -First $CurrentFileObject.FullName -Second $MatchingDestinationFile.FullName) -eq $true) {
+                    if ((Test-FilesAreEqual -First $CurrentFileObject.FullName -Second $MatchingDestinationFile.FullName -Method "Hash") -eq $true) {
                         $DuplicateFileFound = $true
                         $Script:FilesSkipped++
                         #Write-Host "Duplicate Found $($CurrentFileObject.FullName) = $($MatchingDestinationFile.FullName)" -ForegroundColor Cyan
