@@ -105,243 +105,264 @@ NA
 
 function Archive-Photos {
 
-[CmdletBinding()]param(
-    $Extension = ".jpg",
-    $ExtFilter = "*$Extension",
-    $SourcePath = @("C:"),
-    #$SourcePath = @("D:"),
-    #$RootArchiveFolder = "H:\Photo Archive",
-    $RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera",
-    $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
-    $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
-    $ArchiveFolderPattern = "",
-    $ArchiveFilePattern = "",
-    [switch]$ByCamera,
-    $LogfilePath = $false,
-    [switch]$LogEnabled,
-    $Mode = "All", # All, OriginalOnly, OriginalAdd
-    [switch]$WriteHost
-)
-
-
-# Prerequisites
-[System.Reflection.Assembly]::LoadWithPartialName("PresentationCore") | Out-Null
-
-
-$Script:FilesCopied = 0
-$Script:FilesDeleted = 0
-$Script:FilesRenamed = 0
-$Script:FilesSkipped = 0
-
-$DupNameIndex = 0
-
-######
-$SourceImagesWithMetadata = @()
-$SourceImagesWithOutMetadata = @()
-######
-
-#region Functions
-function Get-xDateTimeString {
-    Param (
-        [string]$Pattern = "%d/%m/%Y (%H:%M:%S)",
-        $DateTime = $false
-    )
-    if ($DateTime -eq $false) { Return (get-date -uformat $Pattern) }
-    else { Return (Get-Date $DateTime -uformat $Pattern) }
-}
-function Test-FilesAreEqual {
-    param (
-        [System.IO.FileInfo]$First,
-        [System.IO.FileInfo]$Second,
-        $Method = "Hash" # or "Hash"
+    [CmdletBinding()]param(
+        $Extension = ".jpg",
+        $ExtFilter = "*$Extension",
+        $SourcePath = @("C:"),
+        #$SourcePath = @("D:"),
+        #$RootArchiveFolder = "H:\Photo Archive",
+        $RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera",
+        $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
+        $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
+        $ArchiveFolderPattern = "",
+        $ArchiveFilePattern = "",
+        [switch]$ByCamera,
+        $LogfilePath = $false,
+        [switch]$LogEnabled,
+        $Mode = "All", # All, OriginalOnly, OriginalAdd
+        [switch]$WriteHost
     )
 
-    if ($Method -eq "Binary") {
 
-        $BYTES_TO_READ = 65536 #32768
+    # Prerequisites
+    [System.Reflection.Assembly]::LoadWithPartialName("PresentationCore") | Out-Null
 
-        if ($First.Length -ne $Second.Length) {
-            Return $false
+
+    $Script:FilesCopied = 0
+    $Script:FilesDeleted = 0
+    $Script:FilesRenamed = 0
+    $Script:FilesSkipped = 0
+
+    $DupNameIndex = 0
+
+    ######
+    $SourceImagesWithMetadata = @()
+    $SourceImagesWithOutMetadata = @()
+    ######
+
+    #region Functions
+    function Get-xDateTimeString {
+        Param (
+            [string]$Pattern = "%d/%m/%Y (%H:%M:%S)",
+            $DateTime = $false
+        )
+        if ($DateTime -eq $false) { Return (get-date -uformat $Pattern) }
+        else { Return (Get-Date $DateTime -uformat $Pattern) }
+    }
+    function Test-FilesAreEqual {
+        param (
+            [System.IO.FileInfo]$First,
+            [System.IO.FileInfo]$Second,
+            $Method = "Hash" # or "Hash"
+        )
+
+        if ($Method -eq "Binary") {
+
+            $BYTES_TO_READ = 65536 #32768
+
+            if ($First.Length -ne $Second.Length) {
+                Return $false
+            }
+
+            $Iterations = [System.Math]::Ceiling($First.Length / $BYTES_TO_READ)
+
+            $File1 = $First.OpenRead()
+            $File2 = $Second.OpenRead()
+
+            $one = New-Object byte[] $BYTES_TO_READ
+            $two = New-Object byte[] $BYTES_TO_READ
+
+            for ($i = 0; $i -lt $Iterations; $i++) {
+                $File1.Read($one, 0, $BYTES_TO_READ) | Out-Null
+                $File2.Read($two, 0, $BYTES_TO_READ) | Out-Null
+
+                for ($x = 0; $x -lt $BYTES_TO_READ; $x += 8) {
+                    if ([System.BitConverter]::ToInt64($one, $x) -ne [System.BitConverter]::ToInt64($two, $x)) {
+                        $File1.Close()
+                        $File2.Close()
+                        Return $false
+                    }
+                }
+            }
+    
+            $File1.Close()
+            $File2.Close()
+
+            Return $true
+
+        } 
+        elseIf ($Method -eq "Hash") {
+
+            $HashPair = $First, $Second | Get-xFileHash -Algorithm SHA512 | Select -ExpandProperty Hash
+            if ($HashPair[0] -eq $HashPair[1]) { 
+                Return $true
+            }
+            else {
+                Return $false
+            }
+
         }
-
-        $Iterations = [System.Math]::Ceiling($First.Length / $BYTES_TO_READ)
-
-        $File1 = $First.OpenRead()
-        $File2 = $Second.OpenRead()
-
-        $one = New-Object byte[] $BYTES_TO_READ
-        $two = New-Object byte[] $BYTES_TO_READ
-
-        for ($i = 0; $i -lt $Iterations; $i++) {
-            $File1.Read($one, 0, $BYTES_TO_READ) | Out-Null
-            $File2.Read($two, 0, $BYTES_TO_READ) | Out-Null
-
-            for ($x = 0; $x -lt $BYTES_TO_READ; $x += 8) {
-                if ([System.BitConverter]::ToInt64($one, $x) -ne [System.BitConverter]::ToInt64($two, $x)) {
-                    $File1.Close()
-                    $File2.Close()
-                    Return $false
+    }
+    function Get-xStringNumber {
+        Param ($String)
+	
+        $CharacterHash = @{
+            "a" = 1; "b" = 2; "c" = 3; "d" = 4; "e" = 5
+            "f" = 6; "g" = 7; "h" = 8; "i" = 9; "j" = 10
+            "k" = 11; "l" = 12; "m" = 13; "n" = 14; "o" = 15
+            "p" = 16; "q" = 17; "r" = 18; "s" = 19; "t" = 20
+            "u" = 21; "v" = 22; "w" = 23; "x" = 24; "y" = 25
+            "z" = 26
+            " " = 0
+            "" = 0
+            "0" = 0
+            "1" = 101
+            "2" = 102
+            "3" = 103
+            "4" = 104
+            "5" = 105
+            "6" = 106
+            "7" = 107
+            "8" = 108
+            "9" = 109
+        }
+	
+        [int]$StringNumber = 0
+        if ($null -ne $String) {
+            if ($String -ne "") {
+                $CharacterArray = $String.ToCharArray()
+                foreach ($Character in $CharacterArray) {
+                    $StringNumber += [int]($CharacterHash[[string]$Character])
                 }
             }
         }
-    
-        $File1.Close()
-        $File2.Close()
-
-        Return $true
-
-    } 
-    elseIf ($Method -eq "Hash") {
-
-        $HashPair = $First, $Second | Get-FileHash -Algorithm SHA512 | Select -ExpandProperty Hash
-        if ($HashPair[0] -eq $HashPair[1]) { 
-            Return $true
-        }
-        else {
-            Return $false
-        }
-
+        Return $StringNumber
     }
-}
-function Get-xStringNumber {
-    Param ($String)
+    function Get-xImageMetadataHashtable {
+        param (
+            $SourceImage,
+            $RootArchiveFolder,
+            $UndatedArchiveFolder,
+            [switch]$ByCamera
+        )
 	
-    $CharacterHash = @{
-        "a" = 1; "b" = 2; "c" = 3; "d" = 4; "e" = 5
-        "f" = 6; "g" = 7; "h" = 8; "i" = 9; "j" = 10
-        "k" = 11; "l" = 12; "m" = 13; "n" = 14; "o" = 15
-        "p" = 16; "q" = 17; "r" = 18; "s" = 19; "t" = 20
-        "u" = 21; "v" = 22; "w" = 23; "x" = 24; "y" = 25
-        "z" = 26
-        " " = 0
-        "" = 0
-        "0" = 0
-        "1" = 101
-        "2" = 102
-        "3" = 103
-        "4" = 104
-        "5" = 105
-        "6" = 106
-        "7" = 107
-        "8" = 108
-        "9" = 109
-    }
-	
-    [int]$StringNumber = 0
-    if ($null -ne $String) {
-        if ($String -ne "") {
-            $CharacterArray = $String.ToCharArray()
-            foreach ($Character in $CharacterArray) {
-                $StringNumber += [int]($CharacterHash[[string]$Character])
-            }
-        }
-    }
-    Return $StringNumber
-}
-function Get-xImageMetadataHashtable {
-    param (
-        $SourceImage,
-        $RootArchiveFolder,
-        $UndatedArchiveFolder,
-        [switch]$ByCamera
-    )
-	
-    $Continue = $true
-	
-    try {
-        $ImageStream = New-Object System.IO.FileStream($SourceImage.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read) -ErrorAction Stop -ErrorVariable FileStreamError
-        $Decoder = New-Object System.Windows.Media.Imaging.JpegBitmapDecoder($ImageStream, [Windows.Media.Imaging.BitmapCreateOptions]::None, [Windows.Media.Imaging.BitmapCacheOption]::None) -ErrorAction Stop
         $Continue = $true
-    }
-    catch {
-        if ($ImageStream) { $ImageStream.Dispose() }
-        $Continue = $true
-        $Decoder = $false
-    }
 	
-    if ($Continue -eq $true) {
-        if ($Decoder -ne $false) {
-            $Metadata = $Decoder.Frames[0].Metadata
+        try {
+            $ImageStream = New-Object System.IO.FileStream($SourceImage.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read) -ErrorAction Stop -ErrorVariable FileStreamError
+            $Decoder = New-Object System.Windows.Media.Imaging.JpegBitmapDecoder($ImageStream, [Windows.Media.Imaging.BitmapCreateOptions]::None, [Windows.Media.Imaging.BitmapCacheOption]::None) -ErrorAction Stop
+            $Continue = $true
         }
-        else {
-            $Metadata = [pscustomobject] @{"Name" = "NonMetadata" }
-            $Metadata | Add-Member -MemberType ScriptMethod -Name "GetQuery" -Value { Return $null }
+        catch {
+            if ($ImageStream) { $ImageStream.Dispose() }
+            $Continue = $true
+            $Decoder = $false
         }
-        Remove-Variable -Name Decoder
-		
-        $ExifDateTimeOriginal = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36867}")
-        $SubSecTimeOriginal = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37521}")
-        # Convert Text milliseconds to Integer
-        If ([string]::IsNullOrWhiteSpace($SubSecTimeOriginal) -eq $false) {
-            $SubSecondString = "{0:D3}" -f [int]([float]("." + $SubSecTimeOriginal) * 1000)
-        }
-        Else {
-            $SubSecondString = "{0:D3}" -f 0
-        }
-
-        try { $Title = [string]$Metadata.GetQuery("/xmp/dc:title/x-default") }
-        catch { $Title = "" }
-		
-        $CameraFocalLength = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37386}")
-        $CameraUserComment = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37510}")
-        $ImageDescription = [string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=270}")
-		
-        $CameraMake = [string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=271}")
-        $CameraModel = ([string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=272}")).TrimEnd() #### adjust code to remove illegal characters, arrays etc.
-        if ($CameraModel.length -lt 1) { $CameraModel = "Unknown Camera" }
-		
-        $ImageStream.Dispose()
-        $Revision = "{0:D2}" -f 0 # "00"  
-        $Separator = "-"
-        $Extension = $SourceImage.Extension
-		
-        # Generate CameraID
-        $CameraIDMake = Get-xStringNumber -String $CameraMake
-        $CameraIDModel = Get-xStringNumber -String $CameraModel
-        $CameraIDUserComment = Get-xStringNumber -String $CameraUserComment # 0
 	
-        $CameraID = "{0:D3}" -f ($CameraIDMake + $CameraIDModel + $CameraIDUserComment)
-        ##############
-
-        if (($ExifDateTimeOriginal -lt 1) -or ([string]::IsNullOrWhiteSpace($ExifDateTimeOriginal))) {
-            # No Exif DateTime - Try IPTC
-            try {
-                $IPTCDate = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/date created") 
-                $IPTCTime = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/time created")
+        if ($Continue -eq $true) {
+            if ($Decoder -ne $false) {
+                $Metadata = $Decoder.Frames[0].Metadata
             }
-            catch { $IPTCDate = $null }
-            if ([string]::IsNullOrWhiteSpace($IPTCDate)) {
+            else {
+                $Metadata = [pscustomobject] @{"Name" = "NonMetadata" }
+                $Metadata | Add-Member -MemberType ScriptMethod -Name "GetQuery" -Value { Return $null }
+            }
+            Remove-Variable -Name Decoder
+		
+            $ExifDateTimeOriginal = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36867}")
+            $SubSecTimeOriginal = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37521}")
+            # Convert Text milliseconds to Integer
+            If ([string]::IsNullOrWhiteSpace($SubSecTimeOriginal) -eq $false) {
+                $SubSecondString = "{0:D3}" -f [int]([float]("." + $SubSecTimeOriginal) * 1000)
+            }
+            Else {
+                $SubSecondString = "{0:D3}" -f 0
+            }
+
+            try { $Title = [string]$Metadata.GetQuery("/xmp/dc:title/x-default") }
+            catch { $Title = "" }
+		
+            $CameraFocalLength = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37386}")
+            $CameraUserComment = [string]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=37510}")
+            $ImageDescription = [string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=270}")
+		
+            $CameraMake = [string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=271}")
+            $CameraModel = ([string]$Metadata.GetQuery("/app1/Ifd/exIf:{uint=272}")).TrimEnd() #### adjust code to remove illegal characters, arrays etc.
+            if ($CameraModel.length -lt 1) { $CameraModel = "Unknown Camera" }
+		
+            $ImageStream.Dispose()
+            $Revision = "{0:D2}" -f 0 # "00"  
+            $Separator = "-"
+            $Extension = $SourceImage.Extension
+		
+            # Generate CameraID
+            $CameraIDMake = Get-xStringNumber -String $CameraMake
+            $CameraIDModel = Get-xStringNumber -String $CameraModel
+            $CameraIDUserComment = Get-xStringNumber -String $CameraUserComment # 0
+	
+            $CameraID = "{0:D3}" -f ($CameraIDMake + $CameraIDModel + $CameraIDUserComment)
+            ##############
+
+            if (($ExifDateTimeOriginal -lt 1) -or ([string]::IsNullOrWhiteSpace($ExifDateTimeOriginal))) {
+                # No Exif DateTime - Try IPTC
+                try {
+                    $IPTCDate = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/date created") 
+                    $IPTCTime = [string]$Metadata.GetQuery("/app13/irb/8bimiptc/iptc/time created")
+                }
+                catch { $IPTCDate = $null }
+                if ([string]::IsNullOrWhiteSpace($IPTCDate)) {
     
-                # Other - XMP
-                #$DT3 = $Metadata.GetQuery("/xmp/xmp:CreateDate")
-                #$DT4 = $Metadata.GetQuery("/app1/ifd/exif/{ushort=36868}")
-                #$DT5 = $Metadata.GetQuery("/xmp/exif:DateTimeOriginal")
+                    # Other - XMP
+                    #$DT3 = $Metadata.GetQuery("/xmp/xmp:CreateDate")
+                    #$DT4 = $Metadata.GetQuery("/app1/ifd/exif/{ushort=36868}")
+                    #$DT5 = $Metadata.GetQuery("/xmp/exif:DateTimeOriginal")
     
-                # No Date Time Object - Use Modified Date - LastWriteTime
-                # Change SubSecond to a 3 character Hex string based on File Size to add uniqueness
-                [string]$HexSize = '{0:X3}' -f $SourceImage.Length
-                $SubSecondString = $HexSize[($HexSize.Length - 1)..($HexSize.Length - 3)] -join ""
-                $Year = "{0:D4}" -f $SourceImage.LastWriteTime.Year
-                $Month = "{0:D2}" -f $SourceImage.LastWriteTime.Month
-                $Day = "{0:D2}" -f $SourceImage.LastWriteTime.Day
-                $DateTimeTaken = [PSCustomObject]@{
-                    NoDate          = $true
-                    Year            = $Year
-                    Month           = $Month
-                    Day             = $Day
-                    MonthName       = (get-date -month $Month -format MMM)
-                    DayName         = (get-date -year $Year -month $Month -day $Day).dayofweek
-                    MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
-                    DateString      = "$Year.$Month.$Day"
-                    TimeString      = ("$($SourceImage.LastWriteTime.Hour)$($SourceImage.LastWriteTime.Minute)$($SourceImage.LastWriteTime.Second)" + "." + $SubSecondString)
-                    TimeZone        = "+0000" 
+                    # No Date Time Object - Use Modified Date - LastWriteTime
+                    # Change SubSecond to a 3 character Hex string based on File Size to add uniqueness
+                    [string]$HexSize = '{0:X3}' -f $SourceImage.Length
+                    $SubSecondString = $HexSize[($HexSize.Length - 1)..($HexSize.Length - 3)] -join ""
+                    $Year = "{0:D4}" -f $SourceImage.LastWriteTime.Year
+                    $Month = "{0:D2}" -f $SourceImage.LastWriteTime.Month
+                    $Day = "{0:D2}" -f $SourceImage.LastWriteTime.Day
+                    $DateTimeTaken = [PSCustomObject]@{
+                        NoDate          = $true
+                        Year            = $Year
+                        Month           = $Month
+                        Day             = $Day
+                        MonthName       = (get-date -month $Month -format MMM)
+                        DayName         = (get-date -year $Year -month $Month -day $Day).dayofweek
+                        MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
+                        DateString      = "$Year.$Month.$Day"
+                        TimeString      = ("$($SourceImage.LastWriteTime.Hour)$($SourceImage.LastWriteTime.Minute)$($SourceImage.LastWriteTime.Second)" + "." + $SubSecondString)
+                        TimeZone        = "+0000" 
+                    }
+                }
+                else {
+                    # IPTC DateTime Taken Object
+                    $Year = $IPTCDate.Substring(0, 4)
+                    $Month = $IPTCDate.Substring(4, 2)
+                    $Day = $IPTCDate.Substring(6, 2)
+                    $DateTimeTaken = [PSCustomObject]@{
+                        NoDate          = $false
+                        Year            = $Year
+                        Month           = $Month
+                        Day             = $Day
+                        MonthName       = (get-date -month $Month -format MMM)
+                        DayName         = (get-date -year $Year -month $Month -day $Day).dayofweek
+                        MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
+                        DateString      = "$Year.$Month.$Day"
+                        TimeString      = ($IPTCTime.Substring(0, 6)) + "." + $SubSecondString
+                        TimeZone        = ($IPTCTime.Substring(6, 5))
+                    }
                 }
             }
             else {
-                # IPTC DateTime Taken Object
-                $Year = $IPTCDate.Substring(0, 4)
-                $Month = $IPTCDate.Substring(4, 2)
-                $Day = $IPTCDate.Substring(6, 2)
+                # Exif DateTime Taken Object
+                $Year = $ExifDateTimeOriginal.Substring(0, 4)
+                $Month = $ExifDateTimeOriginal.Substring(5, 2)
+                $Day = $ExifDateTimeOriginal.Substring(8, 2)
+                try { [string]$ExifTimeZone = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36881}") }
+                catch { $ExifTimeZone = "Unavailable" }
                 $DateTimeTaken = [PSCustomObject]@{
                     NoDate          = $false
                     Year            = $Year
@@ -351,143 +372,122 @@ function Get-xImageMetadataHashtable {
                     DayName         = (get-date -year $Year -month $Month -day $Day).dayofweek
                     MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
                     DateString      = "$Year.$Month.$Day"
-                    TimeString      = ($IPTCTime.Substring(0, 6)) + "." + $SubSecondString
-                    TimeZone        = ($IPTCTime.Substring(6, 5))
+                    TimeString      = ($ExifDateTimeOriginal.Substring(11, 8)).Replace(":", "") + "." + $SubSecondString
+                    TimeZone        = $ExifTimeZone
                 }
             }
-        }
-        else {
-            # Exif DateTime Taken Object
-            $Year = $ExifDateTimeOriginal.Substring(0, 4)
-            $Month = $ExifDateTimeOriginal.Substring(5, 2)
-            $Day = $ExifDateTimeOriginal.Substring(8, 2)
-            try { [string]$ExifTimeZone = [String]$Metadata.GetQuery("/app1/Ifd/exIf/subIfd:{uint=36881}") }
-            catch { $ExifTimeZone = "Unavailable" }
-            $DateTimeTaken = [PSCustomObject]@{
-                NoDate          = $false
-                Year            = $Year
-                Month           = $Month
-                Day             = $Day
-                MonthName       = (get-date -month $Month -format MMM)
-                DayName         = (get-date -year $Year -month $Month -day $Day).dayofweek
-                MonthFolderName = ($Year + "-" + $Month + "-" + (get-date -month $Month -format MMMM))
-                DateString      = "$Year.$Month.$Day"
-                TimeString      = ($ExifDateTimeOriginal.Substring(11, 8)).Replace(":", "") + "." + $SubSecondString
-                TimeZone        = $ExifTimeZone
-            }
-        }
 
-        if ($ByCamera -eq $true) {
-            if ($DateTimeTaken.NoDate -eq $false) {
-                $ArchiveFolder = $RootArchiveFolder + "\" + $CameraModel + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+            if ($ByCamera -eq $true) {
+                if ($DateTimeTaken.NoDate -eq $false) {
+                    $ArchiveFolder = $RootArchiveFolder + "\" + $CameraModel + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+                }
+                else {
+                    $ArchiveFolder = $UndatedArchiveFolder + "\" + $CameraModel + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+                }
             }
             else {
-                $ArchiveFolder = $UndatedArchiveFolder + "\" + $CameraModel + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+                if ($DateTimeTaken.NoDate -eq $false) {
+                    $ArchiveFolder = $RootArchiveFolder + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+                }
+                else {
+                    $ArchiveFolder = $UndatedArchiveFolder + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
+                }
             }
-        }
-        else {
-            if ($DateTimeTaken.NoDate -eq $false) {
-                $ArchiveFolder = $RootArchiveFolder + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
-            }
-            else {
-                $ArchiveFolder = $UndatedArchiveFolder + "\" + $DateTimeTaken.Year + "\" + $DateTimeTaken.MonthFolderName
-            }
-        }
 
-        $ArchiveBaseName = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator + $CameraID + $Separator
-        $ArchiveBaseNameShort = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator
-        $ArchiveName = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator + $CameraID + $Separator + $Revision + $Extension
-        $ArchiveBasePath = $ArchiveFolder + "\" + $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString
+            $ArchiveBaseName = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator + $CameraID + $Separator
+            $ArchiveBaseNameShort = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator
+            $ArchiveName = $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString + $Separator + $CameraID + $Separator + $Revision + $Extension
+            $ArchiveBasePath = $ArchiveFolder + "\" + $DateTimeTaken.DateString + $Separator + $DateTimeTaken.TimeString
         
-        # Create Hashtable
-        $Hashtable = [ordered]@{
-            "DateTimeOriginal"     = $DateTimeTaken
-            "SubSecTimeOriginal"   = $SubSecTimeOriginal
-            "Model"                = $CameraModel
-            "Make"                 = $CameraMake
-            "Title"                = $Title
-            "ImageDescription"     = $ImageDescription
-            "ImageDescriptionNew"  = $false
-            "UserComment"          = $CameraUserComment
-            "FocalLength"          = $CameraFocalLength
-            "ArchiveBaseName"      = $ArchiveBaseName
-            "ArchiveBaseNameShort" = $ArchiveBaseNameShort
-            "ArchiveBasePath"      = $ArchiveBasePath
-            "ArchiveFolder"        = $ArchiveFolder
-            "ArchiveAction"        = $false
-            "ArchiveName"          = $ArchiveName
-            "CameraID"             = $CameraID
-            "Revision"             = $Revision
-            "NoMetadata"           = $false
+            # Create Hashtable
+            $Hashtable = [ordered]@{
+                "DateTimeOriginal"     = $DateTimeTaken
+                "SubSecTimeOriginal"   = $SubSecTimeOriginal
+                "Model"                = $CameraModel
+                "Make"                 = $CameraMake
+                "Title"                = $Title
+                "ImageDescription"     = $ImageDescription
+                "ImageDescriptionNew"  = $false
+                "UserComment"          = $CameraUserComment
+                "FocalLength"          = $CameraFocalLength
+                "ArchiveBaseName"      = $ArchiveBaseName
+                "ArchiveBaseNameShort" = $ArchiveBaseNameShort
+                "ArchiveBasePath"      = $ArchiveBasePath
+                "ArchiveFolder"        = $ArchiveFolder
+                "ArchiveAction"        = $false
+                "ArchiveName"          = $ArchiveName
+                "CameraID"             = $CameraID
+                "Revision"             = $Revision
+                "NoMetadata"           = $false
+            }
         }
-    }
-    else {
-        $Hashtable = [ordered]@{
-            "DateTimeOriginal"     = $false
-            "SubSecTimeOriginal"   = $false
-            "Model"                = $false
-            "Make"                 = $false
-            "Title"                = $Error[0].Exception.Message
-            "ImageDescription"     = $false
-            "ImageDescriptionNew"  = $false
-            "UserComment"          = $false
-            "FocalLength"          = $false
-            "ArchiveBaseName"      = $false
-            "ArchiveBaseNameShort" = $false
-            "ArchiveBasePath"      = $false
-            "ArchiveFolder"        = $false
-            "ArchiveAction"        = $false
-            "ArchiveName"          = $false
-            "CameraID"             = $false
-            "Revision"             = $false
-            "NoMetadata"           = $true
+        else {
+            $Hashtable = [ordered]@{
+                "DateTimeOriginal"     = $false
+                "SubSecTimeOriginal"   = $false
+                "Model"                = $false
+                "Make"                 = $false
+                "Title"                = $Error[0].Exception.Message
+                "ImageDescription"     = $false
+                "ImageDescriptionNew"  = $false
+                "UserComment"          = $false
+                "FocalLength"          = $false
+                "ArchiveBaseName"      = $false
+                "ArchiveBaseNameShort" = $false
+                "ArchiveBasePath"      = $false
+                "ArchiveFolder"        = $false
+                "ArchiveAction"        = $false
+                "ArchiveName"          = $false
+                "CameraID"             = $false
+                "Revision"             = $false
+                "NoMetadata"           = $true
+            }
         }
+        Return $Hashtable
     }
-    Return $Hashtable
-}
-function Rename-xFiles {
-    param(
-        $Files,
-        $LogfilePath = "",
-        $LogEnabled = $false
-    )
+    function Rename-xFiles {
+        param(
+            $Files,
+            $LogfilePath = "",
+            $LogEnabled = $false
+        )
 
-    foreach ($File in $Files) {
-        if ((Test-Path -path $File.FullArchivePath) -eq $false) {
-            #Write-Verbose "Renaming $($File.FullName) to $($File.FullArchivePath)" #-ForegroundColor Green
-            Write-Verbose "r" #-ForegroundColor Gray -NoNewline
-            if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Renaming $($File.FullName) to $($File.FullArchivePath)" -LogFile $LogFile -Status "Completed" }
-            rename-item -LiteralPath $File.FullName -NewName $File.PhotoMetadata.ArchiveName
-            $File.PhotoMetadata.ArchiveAction = $false
-            $Script:FilesRenamed++
+        foreach ($File in $Files) {
+            if ((Test-Path -path $File.FullArchivePath) -eq $false) {
+                #Write-Verbose "Renaming $($File.FullName) to $($File.FullArchivePath)" #-ForegroundColor Green
+                #Write-Verbose "r" #-ForegroundColor Gray -NoNewline
+                if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Renaming $($File.FullName) to $($File.FullArchivePath)" -LogFile $LogFile -Status "Completed" }
+                rename-item -LiteralPath $File.FullName -NewName $File.PhotoMetadata.ArchiveName
+                $File.PhotoMetadata.ArchiveAction = $false
+                $Script:FilesRenamed++
+            }
+            if ($File.FullArchivePath -eq $File.FullName) {
+                #Write-Verbose "New and old name match - No action required $($File.FullName)" #-ForegroundColor Cyan
+                if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "New and old name match - No action required $($File.FullName)" -LogFile $LogFile -Status "Skipped" }
+                #Write-Verbose "_" #-ForegroundColor Cyan -NoNewline
+                $File.PhotoMetadata.ArchiveAction = $false
+            }
         }
-        if ($File.FullArchivePath -eq $File.FullName) {
-            #Write-Verbose "New and old name match - No action required $($File.FullName)" #-ForegroundColor Cyan
-            if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "New and old name match - No action required $($File.FullName)" -LogFile $LogFile -Status "Skipped" }
-            Write-Verbose "_" #-ForegroundColor Cyan -NoNewline
-            $File.PhotoMetadata.ArchiveAction = $false
+
+        $RemainingFiles = @($Files | ? { $_.PhotoMetadata.ArchiveAction -eq $true })
+        #Write-Verbose "Remaining Files $RemainingFiles" | FT -auto
+        #Write-Verbose "Archive Actions $($Files.PhotoMetadata.ArchiveAction)"
+
+        if (($null -eq $RemainingFiles) -or ($RemainingFiles.Count -eq 0)) {
+            #Write-Verbose "All files renamed successfully" #-ForegroundColor Green
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "All files renamed successfully" -LogFile $LogFile -Status "Completed" }
+            return $null
         }
+        else {
+            Write-Verbose "($($RemainingFiles.Count))" # -NoNewline
+            Write-Verbose "^" #-ForegroundColor Magenta -NoNewline
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Recursion Initiated - ($($RemainingFiles.Count)) Remaining Files" -LogFile $LogFile -Status "Initiated" }
+            Rename-xFiles -Files $RemainingFiles
+        }
+
     }
 
-    $RemainingFiles = @($Files | ? { $_.PhotoMetadata.ArchiveAction -eq $true })
-    #Write-Verbose "Remaining Files $RemainingFiles" | FT -auto
-    #Write-Verbose "Archive Actions $($Files.PhotoMetadata.ArchiveAction)"
-
-    if (($null -eq $RemainingFiles) -or ($RemainingFiles.Count -eq 0)) {
-        #Write-Verbose "All files renamed successfully" #-ForegroundColor Green
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "All files renamed successfully" -LogFile $LogFile -Status "Completed" }
-        return $null
-    }
-    else {
-        Write-Verbose "($($RemainingFiles.Count))" # -NoNewline
-        Write-Verbose "^" #-ForegroundColor Magenta -NoNewline
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Recursion Initiated - ($($RemainingFiles.Count)) Remaining Files" -LogFile $LogFile -Status "Initiated" }
-        Rename-xFiles -Files $RemainingFiles
-    }
-
-}
-
-<#
+    <#
 Invoke-FastFind and associated CSharp Code ($FileExtensionsCS):
 
 The MIT License (MIT)
@@ -513,7 +513,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 #>
 
-$FileExtensionsCS = @"
+    $FileExtensionsCS = @"
 using Microsoft.Win32.SafeHandles;
 using System;
 using System.Collections;
@@ -1156,9 +1156,9 @@ namespace Communary
 	}
 }
 "@
-Add-Type -TypeDefinition $FileExtensionsCS
-function Invoke-FastFind {
-    <#
+    Add-Type -TypeDefinition $FileExtensionsCS
+    function Invoke-FastFind {
+        <#
         .SYNOPSIS
             Search for files and folders.
         .DESCRIPTION
@@ -1192,224 +1192,261 @@ function Invoke-FastFind {
             https://communary.wordpress.com/
             https://github.com/gravejester/Communary.FileExtensions
     #>
-    [CmdletBinding()]
-    param (
-        # Path where search starts from. The default value is the current directory.
-        [Parameter(Position = 1)]
-        [ValidateNotNullOrEmpty()]
-        [string[]] $Path = ((Get-Location).Path),
+        [CmdletBinding()]
+        param (
+            # Path where search starts from. The default value is the current directory.
+            [Parameter(Position = 1)]
+            [ValidateNotNullOrEmpty()]
+            [string[]] $Path = ((Get-Location).Path),
 
-        # Search filter. Accepts wildcards; * and ?. The default value is '*'.
-        [Parameter(Position = 2)]
-        [string] $Filter = '*',
+            # Search filter. Accepts wildcards; * and ?. The default value is '*'.
+            [Parameter(Position = 2)]
+            [string] $Filter = '*',
 
-        [Parameter()]
-        [Alias('f')]
-        [switch] $File,
+            [Parameter()]
+            [Alias('f')]
+            [switch] $File,
 
-        [Parameter()]
-        [Alias('d')]
-        [switch] $Directory,
+            [Parameter()]
+            [Alias('d')]
+            [switch] $Directory,
 
-        [Parameter()]
-        [switch] $Hidden,
+            [Parameter()]
+            [switch] $Hidden,
 
-        [Parameter()]
-        [switch] $System,
+            [Parameter()]
+            [switch] $System,
 
-        [Parameter()]
-        [switch] $ReadOnly,
+            [Parameter()]
+            [switch] $ReadOnly,
 
-        [Parameter()]
-        [switch] $Compressed,
+            [Parameter()]
+            [switch] $Compressed,
 
-        [Parameter()]
-        [switch] $Archive,
+            [Parameter()]
+            [switch] $Archive,
 
-        [Parameter()]
-        [switch] $ReparsePoint,
+            [Parameter()]
+            [switch] $ReparsePoint,
 
-        # Choose the filter mode for attribute filtering. Valid choices are 'Include', 'Exclude' and 'Strict'. Default is 'Include'.
-        [Parameter()]
-        [ValidateSet('Include', 'Exclude', 'Strict')]
-        [string] $AttributeFilterMode = 'Include',
+            # Choose the filter mode for attribute filtering. Valid choices are 'Include', 'Exclude' and 'Strict'. Default is 'Include'.
+            [Parameter()]
+            [ValidateSet('Include', 'Exclude', 'Strict')]
+            [string] $AttributeFilterMode = 'Include',
 
-        # Perform recursive search.
-        [Parameter()]
-        [Alias('r')]
-        [switch] $Recurse,
+            # Perform recursive search.
+            [Parameter()]
+            [Alias('r')]
+            [switch] $Recurse,
 
-        # Depth of recursive search. Default is null (unlimited recursion).
-        [Parameter()]
-        [nullable[int]] $Depth = $null,
+            # Depth of recursive search. Default is null (unlimited recursion).
+            [Parameter()]
+            [nullable[int]] $Depth = $null,
 
-        # Use a larger buffer for the search, which *can* increase performance. Not supported for operating systems older than Windows Server 2008 R2 and Windows 7.
-        [Parameter()]
-        [switch] $LargeFetch
-    )
+            # Use a larger buffer for the search, which *can* increase performance. Not supported for operating systems older than Windows Server 2008 R2 and Windows 7.
+            [Parameter()]
+            [switch] $LargeFetch
+        )
 
-    if ($PSBoundParameters['File'] -and $PSBoundParameters['Directory']) {
-        $File = $false
-        $Directory = $false
-    }
-
-    foreach ($thisPath in $Path) {
-        #if (Test-Path -Path $thisPath) {
-
-        # adds support for relative paths
-        #$resolvedPath = (Resolve-Path -Path $thisPath).Path
-        #$resolvedPath = $resolvedPath.Replace('Microsoft.PowerShell.Core\FileSystem::','')
-        $resolvedPath = $thisPath
-
-        # handle a quirk where \ at the end of a non-UNC, non-root path failes
-        if (-not ($resolvedPath.ToString().StartsWith('\\'))) {
-            if ($resolvedPath.ToString().EndsWith('\')) {
-                if (-not($resolvedPath -eq ([System.IO.Path]::GetPathRoot($resolvedPath)))) {
-                    $resolvedPath = $resolvedPath.ToString().TrimEnd('\')
-                }
-            }
+        if ($PSBoundParameters['File'] -and $PSBoundParameters['Directory']) {
+            $File = $false
+            $Directory = $false
         }
 
-        # call FastFind to perform search
-        [Communary.FileExtensions]::FastFind($resolvedPath, $Filter, $File, $Directory, $Recurse, $Depth, $true, $true, $LargeFetch, $Hidden, $System, $ReadOnly, $Compressed, $Archive, $ReparsePoint, $AttributeFilterMode)
-        #}
-        #else {
-        #    Write-Warning "$thisPath - Invalid path"
-        #}
-    }
-}
-function Write-xLog {
-    Param(
-        $LogFile,
-        [string]$DateTime = [string](Get-xDateTimeString -Pattern "%Y%m%d-%H.%M.%S"),
-        [string]$Action = "",
-        [string]$Status = "", # (Started, Completed, Running, Error, Warning)
-        [string]$SourcePath = "",
-        [string]$ArchivePath = "",
-        [string]$Message = ""
-    )
-    $LogFile.WriteLine("$DateTime,$Action,$Status,$SourcePath,$ArchivePath,$Message")
-}
+        foreach ($thisPath in $Path) {
+            #if (Test-Path -Path $thisPath) {
 
-#endregion Functions
+            # adds support for relative paths
+            #$resolvedPath = (Resolve-Path -Path $thisPath).Path
+            #$resolvedPath = $resolvedPath.Replace('Microsoft.PowerShell.Core\FileSystem::','')
+            $resolvedPath = $thisPath
 
-$ScriptStart = Get-Date
-$RunTime = Get-xDateTimeString -DateTime $ScriptStart -Pattern "%Y%m%d-%H.%M.%S"
-$swThresh = 1000
-
-# Log File
-if (-not $LogfilePath) {
-    $LogFolder = "$RootArchiveFolder\Logs"
-    $LogfilePath = "$LogFolder\ArchivePhotosScriptLog($Runtime).csv"
-}
-if ($LogEnabled -eq $true) {
-    If ((Test-Path -literalPath $LogFolder) -eq $false) { New-Item $LogFolder -ItemType Directory > $null }
-    $LogFile = New-Object System.IO.StreamWriter($LogfilePath)
-    #Header
-    $LogFile.WriteLine("DateTime,Action,Status,SourcePath,ArchivePath,Message")   
-}
-
-if ($LogEnabled -eq $true) { Write-xLog -Action "Start" -Status "Running" -Message "Mode`:$Mode, Test`:$Test" -LogFile $LogFile }
-
-#Find All Source Photos (JPG)
-# Super Fast Win32 Method
-Write-Verbose "Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
-$Duration_SeachSourceForImages = (Measure-Command { $AllSourceImagePaths = Invoke-FastFind -Recurse -File -Filter $ExtFilter -Path $SourcePath -LargeFetch -System -Hidden -AttributeFilterMode Exclude | Select -ExpandProperty Path }).ToString()
-if ($LogEnabled -eq $true) { Write-xLog -Action "Collect Image File Paths & Hashes $($SourcePaths.Count)" -Message "Duration`: $Duration_SeachSourceForImages" -LogFile $LogFile -Status "Completed" }
-
-# DOS - Issue with Text Encoding
-#Write-Verbose "[B] Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
-#(Measure-Command { $AllSourceImagePaths = ($SourcePath | % { cmd /c dir "$_\*.jpg" /b /s /a-d-h-s }) }).TotalSeconds
-
-$SourceImagePaths = $AllSourceImagePaths
-foreach ($ExcludedFolder in $ExcludedFolders) {
-    $ExcludedFolder
-    $SourceImagePaths = $SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" }
-}
-
-
-###############################################
-# Remove all duplicates from Source including pre-archived matches
-
-Write-Verbose "Group Source Images by Hash"
-$Duration_GroupSourceImagesByHash = (measure-command {
-        $USrcHashes = get-FileHash -LiteralPath $SourceImagePaths -Verbose | Group Hash | % { $_.group[0] } 
-        $USrcHashes | Add-Member -MemberType NoteProperty -Name "Location" -Value "Source"
-    }).TotalSeconds
-if ($LogEnabled -eq $true) { Write-xLog -Action "Group Source Images by Hash " -Message "Duration`: $Duration_GroupSourceImagesByHash" -LogFile $LogFile -Status "Completed" }
-
-Write-Verbose "Get All Archived Hashes"
-(measure-command { $DestImagePaths = Invoke-FastFind -Recurse -File -Filter $ExtFilter -Path $RootArchiveFolder -LargeFetch -System -Hidden -AttributeFilterMode Exclude | Select -ExpandProperty Path }).TotalSecond
-if ($null -ne $DestImagePaths) {
-    (measure-command {
-            $UDestHashes = get-FileHash -LiteralPath $DestImagePaths #bug Check for null
-            $UDestHashes | Add-Member -MemberType NoteProperty -Name "Location" -Value "Archive"
-        }).TotalSeconds
-
-    Write-Verbose "Combine Hashes"
-    (measure-command { $AllHashes = $USrcHashes + $UDestHashes | Group Hash }).TotalSeconds
-
-}
-else {
-    Write-Verbose "Combine Hashes"
-    (measure-command { $AllHashes = $USrcHashes + $UDestHashes | Group Hash }).TotalSeconds
-}
-
-
-Write-Verbose "Eliminate Duplicates from Source"
-(measure-command { $FinalImportPaths = $AllHashes | ? { $_.Count -eq 1 } | % { $_.Group | ? { $_.Location -eq "Source" } } }).TotalSeconds
-
-Write-Verbose "FinalImportPaths Count"
-$FinalImportPaths.Count
-
-
-###############################################
-
-Write-Verbose "$($AllSourceImagePaths.Count) Images found. (Total)" #-ForegroundColor Green
-Write-Verbose "$($SourceImagePaths.Count) Images found. (Filtered)" #-ForegroundColor Green
-Write-Verbose "$($FinalImportPaths.Count) Images found. (Deduped)" #-ForegroundColor Green
-
-
-# Progress Bar Setup
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$i = 1; $t = $FinalImportPaths.Count / 100; $tc = $FinalImportPaths.Count
-
-foreach ($SourceImagePath in $FinalImportPaths.Path) {
-
-    # Get Source JPG metadata
-    if ($LogEnabled -eq $true) { Write-xLog -Action "Get Metadata" -Message "Reading Metadata from $SourceImagePath" -LogFile $LogFile -Status "Initiated" }
-    $CurrentFileObject = (Get-Item -LiteralPath $SourceImagePath | Select-Object *, 
-        @{Label = "PhotoMetaData"; Exp = { 
-                if ($ByCamera -eq $true) { Get-xImageMetadataHashtable -SourceImage $_ -RootArchiveFolder $RootArchiveFolder -UndatedArchiveFolder $UndatedArchiveFolder -ByCamera }
-                else { Get-xImageMetadataHashtable -SourceImage $_ -RootArchiveFolder $RootArchiveFolder -UndatedArchiveFolder $UndatedArchiveFolder }
+            # handle a quirk where \ at the end of a non-UNC, non-root path failes
+            if (-not ($resolvedPath.ToString().StartsWith('\\'))) {
+                if ($resolvedPath.ToString().EndsWith('\')) {
+                    if (-not($resolvedPath -eq ([System.IO.Path]::GetPathRoot($resolvedPath)))) {
+                        $resolvedPath = $resolvedPath.ToString().TrimEnd('\')
+                    }
+                }
             }
-        },
-        @{Label = "Revision"; Exp = { "{0:D2}" -f 0 } },
-        @{Label = "FullArchivePath"; Exp = { "" } }
-    )
 
-    #####
-    if ($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false) {
-        $SourceImagesWithMetadata += $CurrentFileObject
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Successfully Read Metadata" -SourcePath $SourceImagePath -LogFile $LogFile -Status "Completed" }
+            # call FastFind to perform search
+            [Communary.FileExtensions]::FastFind($resolvedPath, $Filter, $File, $Directory, $Recurse, $Depth, $true, $true, $LargeFetch, $Hidden, $System, $ReadOnly, $Compressed, $Archive, $ReparsePoint, $AttributeFilterMode)
+            #}
+            #else {
+            #    Write-Warning "$thisPath - Invalid path"
+            #}
+        }
+    }
+    function Write-xLog {
+        Param(
+            $LogFile,
+            [string]$DateTime = [string](Get-xDateTimeString -Pattern "%Y%m%d-%H.%M.%S"),
+            [string]$Action = "",
+            [string]$Status = "", # (Started, Completed, Running, Error, Warning)
+            [string]$SourcePath = "",
+            [string]$ArchivePath = "",
+            [string]$Message = ""
+        )
+        $LogFile.WriteLine("$DateTime,$Action,$Status,$SourcePath,$ArchivePath,$Message")
+    }
+    Function Get-xFileHash {
+        [CmdletBinding()]
+        Param(
+            [Parameter(ValueFromPipeline)]
+            $Path,
+            [string]$Encryption = "SHA256",
+            $Count,
+            [switch]$Progress
+        )
+        begin {
+            if ($Progress) {
+                $swThresh = 1000
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $i = 1; $t = $Count / 100; $tc = $Count
+            }
+        }
+        process {
+    
+            $ImageStream = ([IO.StreamReader]$Path).BaseStream
+            $FormatedHash = New-Object System.Text.StringBuilder
+            $RawHash = [Security.Cryptography.HashAlgorithm]::Create($Encryption).ComputeHash($ImageStream)
+            foreach ($HashValue in $RawHash) { $null = $FormatedHash.Append("{0:X2}" -f $HashValue) }
+            $Hash = $FormatedHash.ToString()
+            #Remove-Variable FormatedHash
+            $ImageStream.Dispose()
+            if ($Progress) { if ($sw.Elapsed.TotalMilliseconds -ge $swThresh) { Write-Progress -Activity "Generating Hashes" -PercentComplete ([int]$i / $t) -Status "$i of $tc"; $sw.Reset(); $sw.Start() }; $i++ }
+            Return [PSCustomObject]@{
+                "Algorithm" = $Encryption
+                "Hash"      = $Hash
+                "Path"      = $Path
+            }
+        }
+        end {
+            if ($Progress) { Write-Progress -Activity "Generating Hashes" -Completed }
+        }
+    }
+
+    #endregion Functions
+
+    $ScriptStart = Get-Date
+    $RunTime = Get-xDateTimeString -DateTime $ScriptStart -Pattern "%Y%m%d-%H.%M.%S"
+    $swThresh = 1000
+
+    # Log File
+    if (-not $LogfilePath) {
+        $LogFolder = "$RootArchiveFolder\Logs"
+        $LogfilePath = "$LogFolder\ArchivePhotosScriptLog($Runtime).csv"
+    }
+    if ($LogEnabled -eq $true) {
+        If ((Test-Path -literalPath $LogFolder) -eq $false) { New-Item $LogFolder -ItemType Directory > $null }
+        $LogFile = New-Object System.IO.StreamWriter($LogfilePath)
+        #Header
+        $LogFile.WriteLine("DateTime,Action,Status,SourcePath,ArchivePath,Message")   
+    }
+
+    if ($LogEnabled -eq $true) { Write-xLog -Action "Start" -Status "Running" -Message "Mode`:$Mode, Test`:$Test" -LogFile $LogFile }
+
+    #Find All Source Photos (JPG)
+    # Super Fast Win32 Method
+    Write-Verbose "Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
+    $Duration_SeachSourceForImages = (Measure-Command { $AllSourceImagePaths = Invoke-FastFind -Recurse -File -Filter $ExtFilter -Path $SourcePath -LargeFetch -System -Hidden -AttributeFilterMode Exclude | Select -ExpandProperty Path }).ToString()
+    if ($LogEnabled -eq $true) { Write-xLog -Action "Collect Image File Paths & Hashes $($SourcePaths.Count)" -Message "Duration`: $Duration_SeachSourceForImages" -LogFile $LogFile -Status "Completed" }
+
+    # DOS - Issue with Text Encoding
+    #Write-Verbose "[B] Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
+    #(Measure-Command { $AllSourceImagePaths = ($SourcePath | % { cmd /c dir "$_\*.jpg" /b /s /a-d-h-s }) }).TotalSeconds
+
+    $SourceImagePaths = $AllSourceImagePaths
+    foreach ($ExcludedFolder in $ExcludedFolders) {
+        $ExcludedFolder
+        $SourceImagePaths = $SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" }
+    }
+
+
+    ###############################################
+    # Remove all duplicates from Source including pre-archived matches
+
+    Write-Verbose "Group Source Images by Hash"
+    $Duration_GroupSourceImagesByHash = (measure-command {
+            $USrcHashes = $SourceImagePaths | get-xFileHash3 -Count $SourceImagePaths.Count -Progress | Group Hash | % { $_.group[0] } 
+            $USrcHashes | Add-Member -MemberType NoteProperty -Name "Location" -Value "Source"
+        }).TotalSeconds
+    if ($LogEnabled -eq $true) { Write-xLog -Action "Group Source Images by Hash " -Message "Duration`: $Duration_GroupSourceImagesByHash" -LogFile $LogFile -Status "Completed" }
+
+    Write-Verbose "Get All Archived Hashes"
+    (measure-command { $DestImagePaths = Invoke-FastFind -Recurse -File -Filter $ExtFilter -Path $RootArchiveFolder -LargeFetch -System -Hidden -AttributeFilterMode Exclude | Select -ExpandProperty Path }).TotalSecond
+    if ($null -ne $DestImagePaths) {
+        (measure-command {
+                #$UDestHashes = get-FileHash -LiteralPath $DestImagePaths #bug Check for null
+                $UDestHashes = $DestImagePaths | Get-xFileHash -Count $DestImagePaths.Count -Progress
+                $UDestHashes | Add-Member -MemberType NoteProperty -Name "Location" -Value "Archive"
+            }).TotalSeconds
+
+        Write-Verbose "Combine Hashes"
+        (measure-command { $AllHashes = $USrcHashes + $UDestHashes | Group Hash }).TotalSeconds
+
     }
     else {
-        $SourceImagesWithOutMetadata += $CurrentFileObject
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Failed Reading Metadata" -SourcePath $SourceImagePath -LogFile $LogFile -Status "Error" }
+        Write-Verbose "Combine Hashes"
+        (measure-command { $AllHashes = $USrcHashes + $UDestHashes | Group Hash }).TotalSeconds
     }
-    #####
 
-    # Check Destination for existing photos with same primary path (sans version info)
-    if ($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false) {
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Check For Matching Image Versions in Archive" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
-        if (Test-Path -LiteralPath $CurrentFileObject.PhotoMetaData.ArchiveFolder) {
+
+    Write-Verbose "Eliminate Duplicates from Source"
+    (measure-command { $FinalImportPaths = $AllHashes | ? { $_.Count -eq 1 } | % { $_.Group | ? { $_.Location -eq "Source" } } }).TotalSeconds
+
+    Write-Verbose "FinalImportPaths Count"
+    $FinalImportPaths.Count
+
+
+    ###############################################
+
+    Write-Verbose "$($AllSourceImagePaths.Count) Images found. (Total)" #-ForegroundColor Green
+    Write-Verbose "$($SourceImagePaths.Count) Images found. (Filtered)" #-ForegroundColor Green
+    Write-Verbose "$($FinalImportPaths.Count) Images found. (Deduped)" #-ForegroundColor Green
+
+
+    # Progress Bar Setup
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $i = 1; $t = $FinalImportPaths.Count / 100; $tc = $FinalImportPaths.Count
+
+    foreach ($SourceImagePath in $FinalImportPaths.Path) {
+
+        # Get Source JPG metadata
+        if ($LogEnabled -eq $true) { Write-xLog -Action "Get Metadata" -Message "Reading Metadata from $SourceImagePath" -LogFile $LogFile -Status "Initiated" }
+        $CurrentFileObject = (Get-Item -LiteralPath $SourceImagePath | Select-Object *, 
+            @{Label = "PhotoMetaData"; Exp = { 
+                    if ($ByCamera -eq $true) { Get-xImageMetadataHashtable -SourceImage $_ -RootArchiveFolder $RootArchiveFolder -UndatedArchiveFolder $UndatedArchiveFolder -ByCamera }
+                    else { Get-xImageMetadataHashtable -SourceImage $_ -RootArchiveFolder $RootArchiveFolder -UndatedArchiveFolder $UndatedArchiveFolder }
+                }
+            },
+            @{Label = "Revision"; Exp = { "{0:D2}" -f 0 } },
+            @{Label = "FullArchivePath"; Exp = { "" } }
+        )
+
+        #####
+        if ($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false) {
+            $SourceImagesWithMetadata += $CurrentFileObject
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Successfully Read Metadata" -SourcePath $SourceImagePath -LogFile $LogFile -Status "Completed" }
+        }
+        else {
+            $SourceImagesWithOutMetadata += $CurrentFileObject
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Failed Reading Metadata" -SourcePath $SourceImagePath -LogFile $LogFile -Status "Error" }
+        }
+        #####
+
+        # Check Destination for existing photos with same primary path (sans version info)
+        if ($CurrentFileObject.PhotoMetaData.NoMetadata -eq $false) {
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Check For Matching Image Versions in Archive" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
+            if (Test-Path -LiteralPath $CurrentFileObject.PhotoMetaData.ArchiveFolder) {
     
-            $SearchFilter = $CurrentFileObject.PhotoMetaData.ArchiveBasePath + "*"
-            try { $MatchingDestinationFiles = @(Get-ChildItem $SearchFilter) }
-            catch { $MatchingDestinationFiles = $null }
+                $SearchFilter = $CurrentFileObject.PhotoMetaData.ArchiveBasePath + "*"
+                try { $MatchingDestinationFiles = @(Get-ChildItem $SearchFilter) }
+                catch { $MatchingDestinationFiles = $null }
     
-            if ($MatchingDestinationFiles) {
-                if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Matching Versions Found" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
+                if ($MatchingDestinationFiles) {
+                    if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Matching Versions Found" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
                     # Get Metadata from matching destination photos
                     $MatchingDestinationFiles = ($MatchingDestinationFiles | Select-Object *, 
@@ -1457,7 +1494,7 @@ foreach ($SourceImagePath in $FinalImportPaths.Path) {
                             if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Rename Surrounding Files in Archive(Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
                             Rename-xFiles -Files $RenameMatchArray
                             #Write-Verbose "Copying new File to Archive $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
-                            Write-Verbose "A" #-ForegroundColor Yellow -NoNewline
+                            #Write-Verbose "A" #-ForegroundColor Yellow -NoNewline
                             if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
                             Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination $CurrentFileObject.FullArchivePath
                             $Script:FilesCopied++
@@ -1469,7 +1506,7 @@ foreach ($SourceImagePath in $FinalImportPaths.Path) {
                                 # Deleting any existing/matching files in Archive
                                 if ($LogEnabled -eq $true) { Write-xLog -Action "Delete" -Message "Delete Older Files from Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
                                 if ($RenameMatchArray) {
-                                    Write-Verbose "`#" #-ForegroundColor Red -BackgroundColor Yellow -NoNewline
+                                    #Write-Verbose "`#" #-ForegroundColor Red -BackgroundColor Yellow -NoNewline
                                     Write-Host "`#" -ForegroundColor Red -BackgroundColor Yellow -NoNewline
                                     $RenameMatchArray | % { 
                                         Remove-Item -LiteralPath $_.FullName -Force 
@@ -1477,7 +1514,7 @@ foreach ($SourceImagePath in $FinalImportPaths.Path) {
                                     }
                                 }
 
-                                Write-Verbose "O" #-ForegroundColor Yellow -NoNewline
+                                #Write-Verbose "O" #-ForegroundColor Yellow -NoNewline
                                 if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
                                 Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination $CurrentFileObject.FullArchivePath
                                 $Script:FilesCopied++
@@ -1492,7 +1529,7 @@ foreach ($SourceImagePath in $FinalImportPaths.Path) {
                                 if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Rename Newer Files in Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
                                 Rename-xFiles -Files $RenameMatchArray
                                 #Write-Verbose "Copying new File to Archive $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
-                                Write-Verbose "+" #-ForegroundColor Yellow -NoNewline
+                                #Write-Verbose "+" #-ForegroundColor Yellow -NoNewline
                                 if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
                                 Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination $CurrentFileObject.FullArchivePath
                                 $Script:FilesCopied++
@@ -1505,63 +1542,63 @@ foreach ($SourceImagePath in $FinalImportPaths.Path) {
                     }
             
                 
+                }
+                else {
+                    #Copy File
+                    try {
+                        #Write-Verbose "Copy Photo(Existing Folder): " $CurrentFileObject.PhotoMetaData.ArchiveName #-ForegroundColor Cyan
+                        #Write-Verbose "Copying new File to Archive (Existing Folder) $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
+                        #Write-Verbose "+" #-ForegroundColor DarkGreen -NoNewline
+                        if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode) (No Pre-existing Files in Archive)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
+                        Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination ($CurrentFileObject.PhotoMetaData.ArchiveFolder + "\" + $CurrentFileObject.PhotoMetaData.ArchiveName)
+                        $Script:FilesCopied++
+                    }
+                    catch { } # Error copying file to Destination
+                }
             }
             else {
-                #Copy File
-                try {
-                    #Write-Verbose "Copy Photo(Existing Folder): " $CurrentFileObject.PhotoMetaData.ArchiveName #-ForegroundColor Cyan
-                    #Write-Verbose "Copying new File to Archive (Existing Folder) $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
-                    Write-Verbose "+" #-ForegroundColor DarkGreen -NoNewline
-                    if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode) (No Pre-existing Files in Archive)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
-                    Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination ($CurrentFileObject.PhotoMetaData.ArchiveFolder + "\" + $CurrentFileObject.PhotoMetaData.ArchiveName)
-                    $Script:FilesCopied++
-                }
-                catch { } # Error copying file to Destination
+                New-Item -Path $CurrentFileObject.PhotoMetaData.ArchiveFolder -ItemType Directory | Out-Null
+                #Write-Verbose "Copy Photo(New Folder): " $CurrentFileObject.PhotoMetaData.ArchiveName
+                #Write-Verbose "Copying new File to Archive (New Folder) $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
+                #Write-Verbose "+" #-ForegroundColor Green -NoNewline
+                if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode) (No Pre-existing Files in Archive  - Create Folder)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
+                Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination ($CurrentFileObject.PhotoMetaData.ArchiveFolder + "\" + $CurrentFileObject.PhotoMetaData.ArchiveName)
+                $Script:FilesCopied++
             }
         }
         else {
-            New-Item -Path $CurrentFileObject.PhotoMetaData.ArchiveFolder -ItemType Directory | Out-Null
-            #Write-Verbose "Copy Photo(New Folder): " $CurrentFileObject.PhotoMetaData.ArchiveName
-            #Write-Verbose "Copying new File to Archive (New Folder) $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
-            Write-Verbose "+" #-ForegroundColor Green -NoNewline
-            if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode) (No Pre-existing Files in Archive  - Create Folder)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
-            Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination ($CurrentFileObject.PhotoMetaData.ArchiveFolder + "\" + $CurrentFileObject.PhotoMetaData.ArchiveName)
-            $Script:FilesCopied++
+            Write-Verbose "Unable to Retrieve Metadata from`: $($CurrentFileObject.FullName) $($CurrentFileObject.PhotoMetaData.Title)"
+            if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Unable to Retrieve Metadata from`: $($CurrentFileObject.FullName)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
         }
-    }
-    else {
-        Write-Verbose "Unable to Retrieve Metadata from`: $($CurrentFileObject.FullName) $($CurrentFileObject.PhotoMetaData.Title)"
-        if ($LogEnabled -eq $true) { Write-xLog -Action "Metadata" -Message "Unable to Retrieve Metadata from`: $($CurrentFileObject.FullName)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
-    }
 
-    if ($sw.Elapsed.TotalMilliseconds -ge $swThresh) { Write-Progress -Activity "Archiving Files" -PercentComplete ([int]$i / $t) -Status "$i of $tc"; $sw.Reset(); $sw.Start() }; $i++
+        if ($sw.Elapsed.TotalMilliseconds -ge $swThresh) { Write-Progress -Activity "Archiving Files" -PercentComplete ([int]$i / $t) -Status "$i of $tc"; $sw.Reset(); $sw.Start() }; $i++
 
-} 
+    } 
 
-Write-Progress -Activity "Archiving Files" -Completed
+    Write-Progress -Activity "Archiving Files" -Completed
 
 
 
-$ScriptEnd = Get-Date
+    $ScriptEnd = Get-Date
 
-$ScriptDuration = $ScriptEnd - $ScriptStart
+    $ScriptDuration = $ScriptEnd - $ScriptStart
 
-#Write-Verbose
-#Write-Verbose
+    #Write-Verbose
+    #Write-Verbose
 
-Write-Verbose "Script Duration`:`t$($ScriptDuration.TotalSeconds) Seconds" #-ForegroundColor Cyan
+    Write-Verbose "Script Duration`:`t$($ScriptDuration.TotalSeconds) Seconds" #-ForegroundColor Cyan
 
-Write-Verbose "Files Copied  = $($Script:FilesCopied)"  #-ForegroundColor Yellow
-Write-Verbose "Files Deleted = $($Script:FilesDeleted)"  #-ForegroundColor Yellow
-Write-Verbose "Files Renamed = $($Script:FilesRenamed)" #-ForegroundColor Yellow
-Write-Verbose "Files Skipped = $($Script:FilesSkipped)" #-ForegroundColor Yellow
+    Write-Verbose "Files Copied  = $($Script:FilesCopied)"  #-ForegroundColor Yellow
+    Write-Verbose "Files Deleted = $($Script:FilesDeleted)"  #-ForegroundColor Yellow
+    Write-Verbose "Files Renamed = $($Script:FilesRenamed)" #-ForegroundColor Yellow
+    Write-Verbose "Files Skipped = $($Script:FilesSkipped)" #-ForegroundColor Yellow
 
-if ($LogEnabled -eq $true) { Write-xLog -Action "Script" -Message "Script Completed (Duration`:$($ScriptDuration.TotalSeconds))" -LogFile $LogFile -Status "Completed" }
+    if ($LogEnabled -eq $true) { Write-xLog -Action "Script" -Message "Script Completed (Duration`:$($ScriptDuration.TotalSeconds))" -LogFile $LogFile -Status "Completed" }
 
-# Close Log
-$LogFile.Close()
+    # Close Log
+    $LogFile.Close()
 
 
 }
 
-Archive-Photos -LogEnabled -Mode All -ByCamera # Verbose
+Archive-Photos -LogEnabled -Mode All -ByCamera -Verbose
