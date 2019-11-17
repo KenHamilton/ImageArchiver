@@ -108,10 +108,10 @@ function Archive-Photos {
     [CmdletBinding()]param(
         $Extension = ".jpg",
         $ExtFilter = "*$Extension",
-        $SourcePath = @("C:"),
-        #$SourcePath = @("D:"),
-        #$RootArchiveFolder = "H:\Photo Archive",
-        $RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera",
+        #$SourcePath = @("C:"),
+        $SourcePath = @("H:\Photo Archive"),
+        $RootArchiveFolder = "H:\Photo Archive Originals",
+        #$RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera",
         $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
         $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
         $ArchiveFolderPattern = "",
@@ -449,40 +449,42 @@ function Archive-Photos {
         param(
             $Files,
             $LogfilePath = "",
-            $LogEnabled = $false
+            $LogEnabled = $false,
+            $SourceFile
         )
 
         foreach ($File in $Files) {
             if ((Test-Path -path $File.FullArchivePath) -eq $false) {
-                #Write-Verbose "Renaming $($File.FullName) to $($File.FullArchivePath)" #-ForegroundColor Green
-                #Write-Verbose "r" #-ForegroundColor Gray -NoNewline
+                Write-Verbose "Renaming $($File.FullName) to $($File.FullArchivePath)" #-ForegroundColor Green
+                Write-Verbose "r" #-ForegroundColor Gray -NoNewline
                 if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Renaming $($File.FullName) to $($File.FullArchivePath)" -LogFile $LogFile -Status "Completed" }
                 rename-item -LiteralPath $File.FullName -NewName $File.PhotoMetadata.ArchiveName
                 $File.PhotoMetadata.ArchiveAction = $false
                 $Script:FilesRenamed++
             }
             if ($File.FullArchivePath -eq $File.FullName) {
-                #Write-Verbose "New and old name match - No action required $($File.FullName)" #-ForegroundColor Cyan
+                Write-Verbose "New and old name match - No action required $($File.FullName)" #-ForegroundColor Cyan
                 if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "New and old name match - No action required $($File.FullName)" -LogFile $LogFile -Status "Skipped" }
-                #Write-Verbose "_" #-ForegroundColor Cyan -NoNewline
+                Write-Verbose "_" #-ForegroundColor Cyan -NoNewline
                 $File.PhotoMetadata.ArchiveAction = $false
             }
         }
 
         $RemainingFiles = @($Files | ? { $_.PhotoMetadata.ArchiveAction -eq $true })
-        #Write-Verbose "Remaining Files $RemainingFiles" | FT -auto
-        #Write-Verbose "Archive Actions $($Files.PhotoMetadata.ArchiveAction)"
 
         if (($null -eq $RemainingFiles) -or ($RemainingFiles.Count -eq 0)) {
-            #Write-Verbose "All files renamed successfully" #-ForegroundColor Green
+            Write-Verbose "All files renamed successfully" #-ForegroundColor Green
             if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "All files renamed successfully" -LogFile $LogFile -Status "Completed" }
             return $null
         }
         else {
+            Write-Verbose "Remaining Files $($RemainingFiles | FT -auto)"
+            Write-Verbose "Archive Actions $($Files.PhotoMetadata.ArchiveAction | FL)"
             Write-Verbose "($($RemainingFiles.Count))" # -NoNewline
             Write-Verbose "^" #-ForegroundColor Magenta -NoNewline
+            Write-Verbose "Source File`: $($SourceFile.FullName)"
             if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Recursion Initiated - ($($RemainingFiles.Count)) Remaining Files" -LogFile $LogFile -Status "Initiated" }
-            Rename-xFiles -Files $RemainingFiles
+            Rename-xFiles -Files $RemainingFiles -LogfilePath $LogfilePath -LogEnabled $LogEnabled -SourceFile $SourceFile
         }
 
     }
@@ -1351,7 +1353,7 @@ namespace Communary
     # Super Fast Win32 Method
     Write-Verbose "Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
     $Duration_SeachSourceForImages = (Measure-Command { $AllSourceImagePaths = Invoke-FastFind -Recurse -File -Filter $ExtFilter -Path $SourcePath -LargeFetch -System -Hidden -AttributeFilterMode Exclude | Select -ExpandProperty Path }).ToString()
-    if ($LogEnabled -eq $true) { Write-xLog -Action "Collect Image File Paths & Hashes $($SourcePaths.Count)" -Message "Duration`: $Duration_SeachSourceForImages" -LogFile $LogFile -Status "Completed" }
+    if ($LogEnabled -eq $true) { Write-xLog -Action "Collect Image File Paths & Hashes ($($AllSourceImagePaths.Count))" -Message "Duration`: $Duration_SeachSourceForImages" -LogFile $LogFile -Status "Completed" }
 
     # DOS - Issue with Text Encoding
     #Write-Verbose "[B] Searching Source Path/s for Images (.jpg)..." #-ForegroundColor Yellow
@@ -1360,7 +1362,8 @@ namespace Communary
     $SourceImagePaths = $AllSourceImagePaths
     foreach ($ExcludedFolder in $ExcludedFolders) {
         $ExcludedFolder
-        $SourceImagePaths = $SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" }
+        #$SourceImagePaths = $SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" }
+        $SourceImagePaths = @($SourceImagePaths | ? { $_ -notlike "$ExcludedFolder*" } | ? { $_.Substring($_.LastIndexOf("\") + 1, 2) -ne "._" })
     }
 
 
@@ -1369,7 +1372,7 @@ namespace Communary
 
     Write-Verbose "Group Source Images by Hash"
     $Duration_GroupSourceImagesByHash = (measure-command {
-            $USrcHashes = $SourceImagePaths | get-xFileHash3 -Count $SourceImagePaths.Count -Progress | Group Hash | % { $_.group[0] } 
+            $USrcHashes = $SourceImagePaths | get-xFileHash -Count $SourceImagePaths.Count -Progress | Group Hash | % { $_.group[0] } 
             $USrcHashes | Add-Member -MemberType NoteProperty -Name "Location" -Value "Source"
         }).TotalSeconds
     if ($LogEnabled -eq $true) { Write-xLog -Action "Group Source Images by Hash " -Message "Duration`: $Duration_GroupSourceImagesByHash" -LogFile $LogFile -Status "Completed" }
@@ -1465,7 +1468,8 @@ namespace Communary
                     foreach ($PhotoGroup in $RenameMatchArrayGrouped) {
                         $BaseRevision = "{0:D2}" -f $BaseRevisionNum
                         # Check for Matching Image that is not a duplicate but has a matching Modified Time Stamp
-                        if (($PhotoGroup.Count -gt 1) -and ($PhotoGroup.Group.FullName -contains $CurrentFileObject.FullName)) {
+                        #if (($PhotoGroup.Count -gt 1) -and ($PhotoGroup.Group.FullName -contains $CurrentFileObject.FullName)) {
+                        if ($PhotoGroup.Count -gt 1)  {
                             if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Non-Duplicate Versions Found with Matching Modification Date" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
                             $SubRevisionIndex = 0
                             foreach ($Photo in $PhotoGroup.Group) {
@@ -1474,6 +1478,9 @@ namespace Communary
                                 $Photo.PhotoMetaData.ArchiveName = $Photo.PhotoMetaData.ArchiveBaseName + $Photo.Revision + $Photo.Extension
                                 $Photo.PhotoMetaData.ArchiveAction = $true
                                 $SubRevisionIndex++
+
+                                if ($LogEnabled -eq $true) { Write-xLog -Action "Versioning Check" -Message "Photo Revision = $($Photo.Revision)" -SourcePath $Photo.FullName -ArchivePath $Photo.PhotoMetaData.ArchiveName -LogFile $LogFile -Status "Completed" }
+
                             }
                         }
                         else {
@@ -1492,7 +1499,7 @@ namespace Communary
                     switch ($Mode) {
                         "All" {
                             if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Rename Surrounding Files in Archive(Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
-                            Rename-xFiles -Files $RenameMatchArray
+                            Rename-xFiles -Files $RenameMatchArray -SourceFile $CurrentFileObject -LogfilePath $LogfilePath -LogEnabled $LogEnabled
                             #Write-Verbose "Copying new File to Archive $($CurrentFileObject.FullName) to $($CurrentFileObject.FullArchivePath)" #-ForegroundColor Yellow
                             #Write-Verbose "A" #-ForegroundColor Yellow -NoNewline
                             if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode)" -SourcePath $SourceImagePath -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
@@ -1601,4 +1608,6 @@ namespace Communary
 
 }
 
-Archive-Photos -LogEnabled -Mode All -ByCamera -Verbose
+Archive-Photos -LogEnabled -Mode OriginalOnly -ByCamera #-Verbose
+
+Write-Host
