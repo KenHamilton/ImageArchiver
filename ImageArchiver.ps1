@@ -108,10 +108,10 @@ function Archive-Photos {
     [CmdletBinding()]param(
         $Extension = ".jpg",
         $ExtFilter = "*$Extension",
-        #$SourcePath = @("C:"),
-        $SourcePath = @("H:\Photo Archive\iPhone SE\2019\2019-05-May"),
-        $RootArchiveFolder = "H:\Photo Archive 3",
-        #$RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera",
+        $SourcePath = @("C:\Local\Test\Photo Archive"),
+        #$SourcePath = @("H:\Photo Archive\iPhone SE\2019\2019-05-May"),
+        #$RootArchiveFolder = "H:\Photo Archive 3",
+        $RootArchiveFolder = "c:\Local\Test\Photo Archive AllByCamera 2",
         $UndatedArchiveFolder = "$RootArchiveFolder\Undated",
         $ExcludedFolders = @("$($ENV:SystemDrive)\`$Recycle", "$($ENV:SystemDrive)\Windows", "$RootArchiveFolder"),
         $ArchiveFolderPattern = "",
@@ -1724,6 +1724,33 @@ namespace Communary
                                 # Don't copy as it isn't earlier than existing files in archive
                             }
                         }
+                        "OriginalOnlyND" {
+                            if ($LogEnabled -eq $true) { Write-xLog -Action "Rename" -Message "Rename Surrounding Files in Archive(Mode`:$Mode)" -SourcePath $SourceImage.Path -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
+                            Rename-xFiles -Files $RenameMatchArray
+                            # Check if earliest revision (including non-dups of same mod date)
+                            if ($CurrentFileObject.Revision -like (("{0:D2}" -f 0) + "*")) {
+                                # 00
+                                # Deleting any existing/matching files in Archive
+                                if ($LogEnabled -eq $true) { Write-xLog -Action "Delete" -Message "Delete Older Files from Archive (Mode`:$Mode)" -SourcePath $SourceImage.Path -ArchivePath $CurrentFileObject.PhotoMetaData.ArchiveFolder -LogFile $LogFile -Status "Completed" }
+                                
+                                if ($RenameMatchArray) {
+                                    #Write-Verbose "`#" #-ForegroundColor Red -BackgroundColor Yellow -NoNewline
+                                    Write-Host "`#" -ForegroundColor Red -BackgroundColor Yellow -NoNewline
+                                    $RenameMatchArray | ?{$_.Revision -notlike (("{0:D2}" -f 0) + "*")} | % { 
+                                        Remove-Item -LiteralPath $_.FullArchivePath -Force 
+                                        $Script:FilesDeleted++
+                                    }
+                                }
+                        
+                                #Write-Verbose "O" #-ForegroundColor Yellow -NoNewline
+                                if ($LogEnabled -eq $true) { Write-xLog -Action "Archive" -Message "Copy Source File to Archive (Mode`:$Mode)" -SourcePath $SourceImage.Path -ArchivePath $CurrentFileObject.PhotoMetaData.ArchivePath -LogFile $LogFile -Status "Completed" }
+                                Copy-Item -LiteralPath $CurrentFileObject.FullName -Destination $CurrentFileObject.FullArchivePath
+                                $Script:FilesCopied++
+                            }
+                            else {
+                                # Don't copy as it isn't earlier than existing files in archive
+                            }
+                        }
                         "OriginalAdd" {
                             if ($CurrentFileObject.Revision -eq ("{0:D2}" -f 0)) {
                                 # 00
@@ -1797,6 +1824,4 @@ namespace Communary
 
 }
 
-Archive-Photos -LogEnabled -Mode OriginalAdd -ByCamera #-Verbose
-
-Write-Host
+Archive-Photos -LogEnabled -Mode OriginalOnlyND -ByCamera -Verbose
